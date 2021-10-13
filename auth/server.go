@@ -47,11 +47,26 @@ func authHandler(rw http.ResponseWriter, r *http.Request) {
 	if code == "" || state == "" {
 		log.Printf("auth: missing 'code' or 'state' parameter: %+v", q)
 		io.WriteString(rw, "mssing 'code' or 'state' parameter. try again")
+		rw.WriteHeader(http.StatusBadRequest)
+		return
+	}
+
+	// mitigate CSRF
+	stateCookie, err := r.Cookie("state")
+
+	if err != nil {
+		log.Printf("failed to read 'state' cookie: %s", err.Error())
+	}
+
+	if stateCookie.Value != state {
+		log.Printf("'cookie' state value did not match querystring value: %q != %q", stateCookie.Value, state)
+		io.WriteString(rw, "state mismatch")
+		rw.WriteHeader(http.StatusBadRequest)
 		return
 	}
 
 	var user db.User
-	err := Session.Where("state = ?", state).Take(&user).Error
+	err = Session.Where("state = ?", state).Take(&user).Error
 
 	if err != nil {
 		log.Printf("invalid state %q: %s", state, err.Error())
@@ -89,6 +104,14 @@ func authUrlHandler(rw http.ResponseWriter, r *http.Request) {
 	var user db.User
 	state := generateToken()
 	Session.Where(db.User{DiscordId: &discordId}).Attrs(db.User{State: &state}).FirstOrCreate(&user)
+
+	http.SetCookie(rw, &http.Cookie{
+		Name:     "state",
+		Value:    *user.State,
+		MaxAge:   300,
+		HttpOnly: true,
+		Secure:   true,
+	})
 
 	rw.Header().Add("Location", formAuthUrl(*user.State))
 	rw.WriteHeader(http.StatusFound)
